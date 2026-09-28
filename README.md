@@ -17,21 +17,29 @@ Private Telegram CRM for consent-respecting traffic operations. First-contact se
 - Multiple offers/campaigns, per-offer rate and referral link
 - Lead score from supplied context
 - A/B first-message drafts
-- AI reply assistant using OpenAI Responses API with `store=False`
+- AI reply assistant via Polza.ai using an OpenAI-compatible API
 - Follow-up queue
 - Payment accounting
 - CSV export in Telegram and on web
 
 ## Railway deploy
 1. Create a Railway project and PostgreSQL service.
-2. Deploy this folder/repository as the app service.
+2. Deploy this repository as the app service.
 3. Add variables from `.env.example`.
-4. Set start command to `python -m app.main` (the included Procfile already does this).
-5. Generate a public Railway domain and put it into `PUBLIC_URL`, e.g. `https://your-app.up.railway.app`.
+4. Start command: `python -m app.main`.
+5. Generate a public Railway domain and put it into `PUBLIC_URL`.
 6. Set Railway healthcheck path to `/health`.
-7. Open the bot and press **🌐 Dashboard**.
+7. Open the bot and press **🖥 Панель**.
 
 The dashboard is protected by `DASHBOARD_TOKEN`. Use a long random value and do not publish a URL containing the token.
+
+## AI / Polza.ai
+Set these Railway variables:
+- `LLM_API_KEY` — your Polza API key
+- `LLM_BASE_URL=https://polza.ai/api/v1`
+- `LLM_MODEL=deepseek/deepseek-v4-flash`
+
+The API key must only be stored in Railway variables / local `.env`, never committed to GitHub.
 
 ## Commands
 - `/add @username | source | context`
@@ -49,14 +57,6 @@ See `.env.example`.
 Use topical relevance, language, activity and campaign/source performance for prioritization. Do not use protected traits for targeting. Respect opt-outs and platform anti-spam rules.
 
 ## V5 interface
-
-The dashboard is now mobile-first and includes:
-- compact sidebar / bottom mobile navigation;
-- KPI cards and 14-day activity chart;
-- conversion funnel;
-- quick lead creation from the web panel;
-- inline lead status updates;
-- source and A/B performance tables;
-- CSV export and responsive layout.
+The dashboard is mobile-first and includes KPI cards, a 14-day activity chart, conversion funnel, quick lead creation, inline status updates, source/A-B analytics and CSV export.
 
 Open `PUBLIC_URL/?token=YOUR_DASHBOARD_TOKEN`.
