@@ -85,7 +85,7 @@ def create_app(db, rate):
         contacted=int(s['contacted'] or 0); replied=int(s['replied'] or 0); interested=int(s['interested'] or 0); joined=int(s['joined'] or 0); approved=int(s['approved'] or 0); total=int(s['total'] or 0)
         maxv=max([int(x['contacted'] or 0) for x in series]+[1])
         bars=''.join(f'''<div class="barWrap" title="{x['day']}: {x['contacted']} контактов · {x['approved']} approved"><div class="barTrack"><div class="bar" style="height:{max(3,int((x['contacted'] or 0)/maxv*100))}%"></div></div><div class="lab">{str(x['day'])[5:]}</div></div>''' for x in series)
-        funnel=[('Контакты',contacted),('Ответы',replied),('Интерес'interested),('Подписки',joined),('Approved',approved)]
+        funnel=[('Контакты',contacted),('Ответы',replied),('Интерес',interested),('Подписки',joined),('Approved',approved)]
         fmax=max(contacted,1)
         funnel_html=''.join(f'''<div class="frow"><div class="fname">{name}</div><div class="track"><div class="fill" style="width:{max(2,val/fmax*100):.1f}%"></div></div><div class="fval">{val}</div></div>''' for name,val in funnel)
         src_rows=''.join(f"<tr><td class='user'>{_esc(x['source'])}</td><td>{x['contacted']}</td><td>{x['replied']}</td><td class='green'>{x['approved']}</td></tr>" for x in src) or '<tr><td colspan="4" class="empty">Пока нет данных</td></tr>'
