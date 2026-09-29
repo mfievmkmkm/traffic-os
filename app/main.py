@@ -82,6 +82,30 @@ def score_ctx(ctx):
         if k in x: s -= 20
     return max(0,min(s,100))
 
+def contextual_hooks(l):
+    """Non-AI hooks for Telegram Scanner leads; uses only broad topical signals."""
+    x=(l['context'] or '').lower()
+    if 'фьюч' in x or 'futures' in x or 'плеч' in x:
+        topic='фьючерсам'
+        q='ты сейчас больше BTC смотришь или альты?'
+    elif 'btc' in x or 'битко' in x:
+        topic='битку'
+        q='ты сейчас больше внутри дня смотришь или среднесрок?'
+    elif 'eth' in x or 'эфир' in x:
+        topic='эфиру'
+        q='ты сейчас ETH отдельно торгуешь или вместе с BTC смотришь?'
+    elif 'спот' in x:
+        topic='споту'
+        q='ты сейчас больше набор позиций смотришь или уже сидишь в рынке?'
+    else:
+        topic='рынку'
+        q='ты сейчас больше трейдишь или просто рынок отслеживаешь?'
+    return [
+        f'привет. увидел твой комментарий по {topic} — {q}',
+        f'привет, заметил тебя в обсуждении по {topic}. есть небольшое тематическое комьюнити без общего криптошума. если актуально — могу скинуть посмотреть',
+        f'привет. по твоему сообщению понял, что тема {topic} тебе актуальна. могу скинуть один профильный канал, если хочешь',
+    ]
+
 async def report_text(days=None):
     s=await db.stats(RATE,days); con=s['contacted'] or 1; label=f'за {days} дн.' if days else 'всего'
     return (f"📊 <b>TRAFFIC OS · {label}</b>\n\nЛидов: {s['total']} · NEW: {s['new']}\nКонтактов: {s['contacted']}\nОтветили: {s['replied']}\nИнтерес: {s['interested']}\n"
@@ -171,7 +195,10 @@ async def hook_cmd(m:Message):
         return await m.answer('🧲 Формат: <code>/hook LEAD_ID</code>')
     l=await db.get(int(raw))
     if not l: return await m.answer('Лид не найден.')
-    hooks=await outreach_hooks(l['context'],l['source'])
+    if (l['source'] or '').startswith('scanner:'):
+        hooks='\n'.join(f'{chr(65+i)}) {x}' for i,x in enumerate(contextual_hooks(l)))
+    else:
+        hooks=await outreach_hooks(l['context'],l['source'])
     await m.answer(
         f'🧲 <b>3 захода для @{html.escape(l["username"])}</b>\n\n'
         f'{html.escape(hooks)}\n\n'
@@ -345,7 +372,10 @@ async def hook_button(c):
     lid=int(c.data.split(':')[1]); l=await db.get(lid)
     if not l: return await c.answer('Лид не найден',show_alert=True)
     await c.answer('Генерирую…')
-    hooks=await outreach_hooks(l['context'],l['source'])
+    if (l['source'] or '').startswith('scanner:'):
+        hooks='\n'.join(f'{chr(65+i)}) {x}' for i,x in enumerate(contextual_hooks(l)))
+    else:
+        hooks=await outreach_hooks(l['context'],l['source'])
     await c.message.answer(
         f'🧲 <b>Заходы для @{html.escape(l["username"])}</b>\n\n{html.escape(hooks)}'
     )
