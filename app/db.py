@@ -312,12 +312,14 @@ class DB:
         )
 
     async def add_lead_evidence(self, lead_id, source_id, message_id, context, score):
-        await self.pool.execute(
+        row = await self.pool.fetchrow(
             """INSERT INTO lead_evidence(lead_id,source_id,message_id,context,score)
                VALUES($1,$2,$3,$4,$5)
-               ON CONFLICT(source_id,message_id) DO NOTHING""",
+               ON CONFLICT(source_id,message_id) DO NOTHING
+               RETURNING id""",
             int(lead_id), int(source_id), int(message_id), context, int(score)
         )
+        return bool(row)
 
     async def lead_evidence(self, lead_id, limit=5):
         return await self.pool.fetch(
@@ -326,6 +328,44 @@ class DB:
                WHERE e.lead_id=$1 ORDER BY e.created_at DESC LIMIT $2""",
             int(lead_id), int(limit)
         )
+
+    async def scanner_performance(self, limit=20):
+        return await self.pool.fetch(
+            """WITH ev AS (
+                 SELECT DISTINCT source_id,lead_id FROM lead_evidence
+               )
+               SELECT s.id,s.username,s.title,s.status,s.messages_seen,s.leads_found,s.participants,
+                 count(ev.lead_id) AS attributed_leads,
+                 count(ev.lead_id) FILTER(WHERE l.contacted_at IS NOT NULL) AS contacted,
+                 count(ev.lead_id) FILTER(WHERE l.replied_at IS NOT NULL) AS replied,
+                 count(ev.lead_id) FILTER(WHERE l.approved_at IS NOT NULL) AS approved,
+                 CASE WHEN s.messages_seen>0
+                   THEN round((count(ev.lead_id)::numeric*1000)/s.messages_seen,2)
+                   ELSE 0 END AS leads_per_1k,
+                 CASE WHEN count(ev.lead_id) FILTER(WHERE l.contacted_at IS NOT NULL)>0
+                   THEN round(
+                     (count(ev.lead_id) FILTER(WHERE l.replied_at IS NOT NULL)::numeric*100) /
+                     count(ev.lead_id) FILTER(WHERE l.contacted_at IS NOT NULL),1
+                   ) ELSE 0 END AS reply_rate
+               FROM scanner_sources s
+               LEFT JOIN ev ON ev.source_id=s.id
+               LEFT JOIN leads l ON l.id=ev.lead_id
+               GROUP BY s.id
+               ORDER BY approved DESC,replied DESC,leads_per_1k DESC,s.messages_seen DESC
+               LIMIT $1""", int(limit)
+        )
+
+    async def auto_pause_scanner_sources(self, min_messages=2000, max_leads=0):
+        rows = await self.pool.fetch(
+            """UPDATE scanner_sources
+               SET status='PAUSED',updated_at=now()
+               WHERE status='ACTIVE'
+                 AND messages_seen >= $1
+                 AND leads_found <= $2
+               RETURNING *""",
+            int(min_messages), int(max_leads)
+        )
+        return rows
 
     async def set_state(self, key, value):
         await self.pool.execute("""INSERT INTO app_state(key,value) VALUES($1,$2)
