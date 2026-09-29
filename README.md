@@ -32,6 +32,10 @@ Private Telegram CRM for consent-respecting traffic operations. First-contact se
 - Deduplicates by Telegram username and prioritizes by score
 - Scanner-sourced opening messages are generated locally from broad topical signals; raw scanner content is not sent to the LLM
 - Manual first contact only; no bulk unsolicited DM sender
+- Automatic public-source discovery every `SCANNER_DISCOVERY_HOURS` (default 6h)
+- Strong-lead Telegram alerts at `SCANNER_STRONG_SCORE` (default 85)
+- Source leaderboard: messages → leads → replies → approved
+- Conservative auto-pause: by default only after 2000 eligible messages and 0 leads; pausing does not leave the group
 
 ### Scanner setup
 1. Create your Telegram API application at my.telegram.org → API development tools.
@@ -51,6 +55,11 @@ Optional:
 - `SCANNER_QUERIES`
 - `SCANNER_MIN_SCORE=55`
 - `SCANNER_CONTEXT_CHARS=1200`
+- `SCANNER_STRONG_SCORE=85`
+- `SCANNER_DISCOVERY_HOURS=6`
+- `SCANNER_HEALTH_HOURS=12`
+- `SCANNER_AUTO_PAUSE_MESSAGES=2000`
+- `SCANNER_AUTO_PAUSE_MAX_LEADS=0`
 
 Telegram API usage is subject to Telegram's API Terms. Do not use the scanner for flooding, spam, participant scraping, automated unsolicited DMs, or evading platform restrictions.
 
