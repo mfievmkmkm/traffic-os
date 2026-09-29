@@ -121,10 +121,16 @@ class TelegramScanner:
                     about = getattr(full.full_chat, "about", "") or ""
                     if about:
                         texts.append(about)
+                    pinned_id = getattr(full.full_chat, "pinned_msg_id", None)
+                    if pinned_id:
+                        pinned = await self.client.get_messages(entity, ids=pinned_id)
+                        pinned_text = (getattr(pinned, "raw_text", "") or "").strip()
+                        if pinned_text:
+                            texts.append(pinned_text)
                 except Exception:
                     pass
 
-                async for msg in self.client.iter_messages(entity, limit=120):
+                async for msg in self.client.iter_messages(entity, limit=300):
                     text = (getattr(msg, "raw_text", "") or "").strip()
                     if text:
                         texts.append(text)
@@ -187,6 +193,7 @@ class TelegramScanner:
             )
         self.last_discovery_count = len(rows)
         if rows:
+            await self.db.apply_scanner_network_scope([x["username"] for x in rows])
             self.last_error = ""
         return rows
 
