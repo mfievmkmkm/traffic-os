@@ -24,7 +24,8 @@ Private Telegram CRM for consent-respecting traffic operations. First-contact se
 
 ## V6 Telegram Scanner
 - Telethon user-client scanner for public crypto discussion groups
-- Source discovery by configurable crypto/trading search queries
+- Curated-network discovery from `SCANNER_NETWORK_ROOTS`; global Telegram keyword search is disabled
+- Filters the network to public discussion groups with multiple recent human authors; broadcast/admin-only sources are skipped
 - One-click source approval from the bot; no blind auto-joining
 - Watches only approved sources and only new group messages
 - Keyword/topic relevance scoring; no protected-trait targeting
@@ -32,7 +33,7 @@ Private Telegram CRM for consent-respecting traffic operations. First-contact se
 - Deduplicates by Telegram username and prioritizes by score
 - Scanner-sourced opening messages are generated locally from broad topical signals; raw scanner content is not sent to the LLM
 - Manual first contact only; no bulk unsolicited DM sender
-- Automatic public-source discovery every `SCANNER_DISCOVERY_HOURS` (default 6h)
+- Automatic refresh of the configured chat network every `SCANNER_DISCOVERY_HOURS`
 - Strong-lead Telegram alerts at `SCANNER_STRONG_SCORE` (default 85)
 - Source leaderboard: messages → leads → replies → approved
 - Conservative auto-pause: by default only after 2000 eligible messages and 0 leads; pausing does not leave the group
@@ -52,11 +53,14 @@ Required scanner variables:
 - `TG_SESSION`
 
 Optional:
-- `SCANNER_QUERIES`
-- `SCANNER_MIN_SCORE=55`
+- `SCANNER_NETWORK_ROOTS=asasasalxk`
+- `SCANNER_NETWORK_SAMPLE_MESSAGES=100`
+- `SCANNER_NETWORK_MIN_AUTHORS=5`
+- `SCANNER_NETWORK_MAX_CHATS=40`
+- `SCANNER_MIN_SCORE=38`
 - `SCANNER_CONTEXT_CHARS=1200`
-- `SCANNER_STRONG_SCORE=85`
-- `SCANNER_DISCOVERY_HOURS=6`
+- `SCANNER_STRONG_SCORE=72`
+- `SCANNER_DISCOVERY_HOURS=3`
 - `SCANNER_HEALTH_HOURS=12`
 - `SCANNER_AUTO_PAUSE_MESSAGES=2000`
 - `SCANNER_AUTO_PAUSE_MAX_LEADS=0`
