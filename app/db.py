@@ -273,6 +273,28 @@ class DB:
             int(tg_id), username, title, status, discovered_by, int(participants or 0)
         )
 
+    async def apply_scanner_network_scope(self, usernames):
+        names = [str(x).strip().lstrip('@').lower() for x in usernames if str(x).strip()]
+        if not names:
+            return
+        # Old global-search candidates are retired. Active non-network sources are paused,
+        # but the account is not forced to leave any Telegram group.
+        await self.pool.execute(
+            """UPDATE scanner_sources
+               SET status=CASE WHEN status='ACTIVE' THEN 'PAUSED' ELSE 'REJECTED' END,
+                   updated_at=now()
+               WHERE username <> ALL($1::text[])
+                 AND status IN ('ACTIVE','DISCOVERED')""",
+            names
+        )
+        await self.pool.execute(
+            """UPDATE scanner_sources
+               SET status=CASE WHEN status='ACTIVE' THEN 'ACTIVE' ELSE 'DISCOVERED' END,
+                   updated_at=now()
+               WHERE username = ANY($1::text[])""",
+            names
+        )
+
     async def scanner_sources(self, status=None, limit=50):
         if status:
             return await self.pool.fetch(
