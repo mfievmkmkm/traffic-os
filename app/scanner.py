@@ -1,5 +1,6 @@
 import asyncio
 import os
+import re
 
 from telethon import TelegramClient, events, functions
 from telethon.errors import FloodWaitError, UserAlreadyParticipantError
@@ -8,12 +9,12 @@ from telethon.sessions import StringSession
 API_ID = int(os.getenv("TG_API_ID", "0") or 0)
 API_HASH = os.getenv("TG_API_HASH", "")
 SESSION = os.getenv("TG_SESSION", "")
-DISCOVERY_QUERIES = [
-    x.strip() for x in os.getenv(
-        "SCANNER_QUERIES",
-        "crypto chat,крипто чат,trading chat,трейдинг чат,bitcoin chat,BTC chat,futures trading,фьючерсы,криптовалюта,биткоин трейдинг,альткоины,спот трейдинг,crypto trading,bitcoin trading,altcoin trading,crypto market,bybit chat,binance chat,TON chat,solana chat"
-    ).split(",") if x.strip()
+NETWORK_ROOTS = [
+    x.strip().lstrip("@") for x in os.getenv("SCANNER_NETWORK_ROOTS", "asasasalxk").split(",") if x.strip()
 ]
+NETWORK_SAMPLE_MESSAGES = max(20, int(os.getenv("SCANNER_NETWORK_SAMPLE_MESSAGES", "100")))
+NETWORK_MIN_AUTHORS = max(2, int(os.getenv("SCANNER_NETWORK_MIN_AUTHORS", "5")))
+NETWORK_MAX_CHATS = max(5, int(os.getenv("SCANNER_NETWORK_MAX_CHATS", "40")))
 MIN_SCORE = int(os.getenv("SCANNER_MIN_SCORE", "38"))
 STRONG_SCORE = int(os.getenv("SCANNER_STRONG_SCORE", "72"))
 MAX_CONTEXT = int(os.getenv("SCANNER_CONTEXT_CHARS", "1200"))
@@ -85,49 +86,109 @@ class TelegramScanner:
             "last_error": self.last_error,
         }
 
+    async def _group_activity(self, entity):
+        """Return recent human-author activity without scraping participant lists."""
+        authors = set()
+        messages = 0
+        async for msg in self.client.iter_messages(entity, limit=NETWORK_SAMPLE_MESSAGES):
+            text = (getattr(msg, "raw_text", "") or "").strip()
+            if not text:
+                continue
+            sender = await msg.get_sender()
+            if not sender or getattr(sender, "bot", False):
+                continue
+            username = getattr(sender, "username", None)
+            if not username:
+                continue
+            messages += 1
+            authors.add(username.lower())
+        return messages, len(authors)
+
     async def discover(self):
+        """Discover only public discussion groups linked from the configured network roots."""
         if not await self._ensure_connected():
             raise RuntimeError(self.last_error or "Scanner не смог подключиться к Telegram.")
-        found = {}
-        for query in DISCOVERY_QUERIES:
+
+        candidates = {}
+        link_re = re.compile(r"(?:https?://)?t\.me/([A-Za-z0-9_]{5,})|@([A-Za-z0-9_]{5,})", re.I)
+
+        for root in NETWORK_ROOTS:
             try:
-                result = await self.client(functions.contacts.SearchRequest(q=query, limit=40))
+                entity = await self.client.get_entity(root)
+                texts = []
+                try:
+                    full = await self.client(functions.channels.GetFullChannelRequest(entity))
+                    about = getattr(full.full_chat, "about", "") or ""
+                    if about:
+                        texts.append(about)
+                except Exception:
+                    pass
+
+                async for msg in self.client.iter_messages(entity, limit=120):
+                    text = (getattr(msg, "raw_text", "") or "").strip()
+                    if text:
+                        texts.append(text)
+
+                # The root itself may also be a discussion group.
+                root_username = getattr(entity, "username", None)
+                if root_username:
+                    candidates[root_username.lower()] = root_username
+
+                for text in texts:
+                    for match in link_re.finditer(text):
+                        username = match.group(1) or match.group(2)
+                        if username:
+                            candidates[username.lower()] = username
             except FloodWaitError as e:
                 self.last_error = f"Telegram FloodWait: {e.seconds}s"
                 break
             except Exception as e:
-                self.last_error = f"{type(e).__name__}: {e}"
-                continue
-            for chat in result.chats:
-                username = getattr(chat, "username", None)
-                if not username or not getattr(chat, "megagroup", False):
-                    continue
-                tg_id = int(getattr(chat, "id", 0) or 0)
-                if not tg_id:
-                    continue
-                title = getattr(chat, "title", username) or username
-                participants = int(getattr(chat, "participants_count", 0) or 0)
-                key = username.lower()
-                prev = found.get(key)
-                if not prev or participants > prev["participants"]:
-                    found[key] = {
-                        "tg_id": tg_id,
-                        "username": username,
-                        "title": title,
-                        "participants": participants,
-                        "query": query,
-                    }
+                self.last_error = f"Сетка @{root}: {type(e).__name__}: {e}"
 
-        rows = sorted(found.values(), key=lambda x: x["participants"], reverse=True)
-        for item in rows[:150]:
+        found = []
+        for username in list(candidates.values())[:NETWORK_MAX_CHATS * 3]:
+            try:
+                entity = await self.client.get_entity(username)
+                if not getattr(entity, "megagroup", False):
+                    continue
+                public_username = getattr(entity, "username", None)
+                if not public_username:
+                    continue
+
+                messages, unique_authors = await self._group_activity(entity)
+                # Reject admin-only / nearly one-way groups. We want actual discussions.
+                if unique_authors < NETWORK_MIN_AUTHORS:
+                    continue
+
+                found.append({
+                    "tg_id": int(getattr(entity, "id", 0) or 0),
+                    "username": public_username,
+                    "title": getattr(entity, "title", public_username) or public_username,
+                    "participants": int(getattr(entity, "participants_count", 0) or 0),
+                    "query": f"network:{NETWORK_ROOTS[0] if NETWORK_ROOTS else 'root'}",
+                    "recent_messages": messages,
+                    "unique_authors": unique_authors,
+                })
+            except FloodWaitError as e:
+                self.last_error = f"Telegram FloodWait: {e.seconds}s"
+                break
+            except Exception:
+                continue
+
+        found.sort(
+            key=lambda x: (x["unique_authors"], x["recent_messages"], x["participants"]),
+            reverse=True
+        )
+        rows = found[:NETWORK_MAX_CHATS]
+        for item in rows:
             await self.db.upsert_scanner_source(
                 item["tg_id"], item["username"], item["title"], "DISCOVERED",
                 item["query"], item["participants"]
             )
-        self.last_discovery_count = len(rows[:150])
+        self.last_discovery_count = len(rows)
         if rows:
             self.last_error = ""
-        return rows[:150]
+        return rows
 
     async def activate_source(self, source_id):
         if not await self._ensure_connected():
