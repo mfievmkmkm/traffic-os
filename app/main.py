@@ -3,7 +3,7 @@ from datetime import datetime
 from zoneinfo import ZoneInfo
 
 import uvicorn
-from aiogram import Bot, Dispatcher, F
+from aiogram import Bot, Dispatcher, F, BaseMiddleware
 from aiogram.filters import CommandStart, Command
 from aiogram.types import Message, InlineKeyboardMarkup, InlineKeyboardButton, BufferedInputFile
 from aiogram.enums import ParseMode
@@ -34,6 +34,18 @@ DEFAULT_OFFER_ID = None
 scanner = None
 
 def allowed(uid): return bool(ADMINS) and uid in ADMINS
+
+class AdminCallbackMiddleware(BaseMiddleware):
+    async def __call__(self, handler, event, data):
+        if not event.from_user or not allowed(event.from_user.id):
+            try:
+                await event.answer('Нет доступа', show_alert=True)
+            except Exception:
+                pass
+            return None
+        return await handler(event, data)
+
+dp.callback_query.outer_middleware(AdminCallbackMiddleware())
 
 def menu():
     return InlineKeyboardMarkup(inline_keyboard=[
@@ -241,6 +253,7 @@ def scanner_menu():
         [InlineKeyboardButton(text='🔭 Найти крипто-чаты',callback_data='scan:discover')],
         [InlineKeyboardButton(text='📡 Подключённые',callback_data='scan:active'),
          InlineKeyboardButton(text='🗂 Найденные',callback_data='scan:found')],
+        [InlineKeyboardButton(text='🏆 Эффективность источников',callback_data='scan:performance')],
         [InlineKeyboardButton(text='🎯 К лидам',callback_data='next')],
     ])
 
@@ -272,8 +285,10 @@ async def finder_cb(c):
     await c.message.answer(
         f"🔎 <b>TRAFFIC SCANNER</b>\n\n{icon} Telegram Scanner: {'онлайн' if st['connected'] else 'не подключён'}\n"
         f"📡 Активных источников: <b>{st['active_sources']}</b>\n"
-        f"🗂 Найдено кандидатов: <b>{st['discovered_sources']}</b>\n\n"
-        "Scanner ищет публичные крипто-группы, а после твоего подтверждения следит за новыми сообщениями и кладёт релевантных авторов в 🎯 очередь."
+        f"🗂 Найдено кандидатов: <b>{st['discovered_sources']}</b>\n"
+        f"🔄 Последний автопоиск: <b>{st.get('last_discovery_count',0)}</b> источников\n"
+        f"⏸ Автопауза: <b>{st.get('auto_paused_count',0)}</b>\n\n"
+        "Scanner сам обновляет каталог источников по расписанию. Подключённые группы слушаются в реальном времени, а сильные лиды приходят отдельным уведомлением."
         f"{setup}{err}",
         reply_markup=scanner_menu()
     )
@@ -317,6 +332,27 @@ async def scan_active(c):
     await c.message.answer(
         f'📡 <b>ПОДКЛЮЧЁННЫЕ</b>\n\n{text}\n\n👁 — просмотрено сообщений · 🔥 — кандидатов добавлено',
         reply_markup=source_rows(rows,'active')
+    )
+    await c.answer()
+
+@dp.callback_query(F.data=='scan:performance')
+async def scan_performance(c):
+    rows=await db.scanner_performance(15)
+    if not rows:
+        text='Пока недостаточно данных.'
+    else:
+        parts=[]
+        for i,r in enumerate(rows,1):
+            parts.append(
+                f"{i}. <b>@{html.escape(r['username'])}</b> · {r['status']}\n"
+                f"   👁 {r['messages_seen']} · 🔥 {r['attributed_leads']} · "
+                f"↩️ {r['replied']} · 💵 {r['approved']} · {r['leads_per_1k']}/1k"
+            )
+        text='\n'.join(parts)
+    await c.message.answer(
+        '🏆 <b>ЭФФЕКТИВНОСТЬ ИСТОЧНИКОВ</b>\n\n'+text+
+        '\n\n🔥 — найдено кандидатов · ↩️ — ответили · 💵 — засчитано · /1k — лидов на 1000 сообщений',
+        reply_markup=scanner_menu()
     )
     await c.answer()
 
@@ -470,9 +506,31 @@ async def main():
     if not TOKEN or not DBURL or not ADMINS: raise RuntimeError('Set BOT_TOKEN, DATABASE_URL and ADMIN_IDS')
     await db.connect(); o=await db.ensure_default_offer(OFFER,RATE,REF); DEFAULT_OFFER_ID=o['id']
     bot=Bot(TOKEN,default=DefaultBotProperties(parse_mode=ParseMode.HTML))
-    scanner=TelegramScanner(db,score_ctx,DEFAULT_OFFER_ID)
-    await scanner.start()
+
+    async def strong_lead_alert(lead, src, context, score):
+        preview=html.escape((context or '')[:500])
+        markup=InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text='🧲 Заходы',callback_data=f"hook:{lead['id']}"),
+             InlineKeyboardButton(text='🎯 Открыть очередь',callback_data='next')],
+            [InlineKeyboardButton(text='🚫 Пропустить',callback_data=f"s:SKIPPED:{lead['id']}")]
+        ])
+        text=(
+            f"🔥 <b>СИЛЬНЫЙ ЛИД · {score}/100</b>\n\n"
+            f"👤 @{html.escape(lead['username'])}\n"
+            f"📍 @{html.escape(src['username'])}\n\n"
+            f"💬 {preview}"
+        )
+        for uid in ADMINS:
+            try:
+                await bot.send_message(uid,text,reply_markup=markup)
+            except Exception:
+                pass
+
+    scanner=TelegramScanner(db,score_ctx,DEFAULT_OFFER_ID,strong_lead_alert)
+    scanner_started=await scanner.start()
     tasks=[asyncio.create_task(run_web()),asyncio.create_task(daily_report_loop(bot))]
+    if scanner_started:
+        tasks.append(asyncio.create_task(scanner.maintenance_loop()))
     try: await dp.start_polling(bot)
     finally:
         for t in tasks: t.cancel()
