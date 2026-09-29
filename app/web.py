@@ -34,8 +34,10 @@ async function setStatus(id, el){
 '''
 
 def _auth(token):
-    if DASH_TOKEN and toke != DASH_TOKEN:
-        raise HTTPException(401, 'Неверный токен панеи')
+    if not DASH_TOKEN:
+        raise HTTPException(503, 'DASHBOARD_TOKEN не настроен')
+    if token != DASH_TOKEN:
+        raise HTTPException(401, 'Неверный токен панели')
 
 def _esc(v):
     return html.escape(str(v or ''))
