@@ -255,6 +255,7 @@ async def report_cmd(m:Message):
 def scanner_menu():
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text='🔭 Найти крипто-чаты',callback_data='scan:discover')],
+        [InlineKeyboardButton(text='➕ Подключить 3 лучших',callback_data='scan:activate3')],
         [InlineKeyboardButton(text='📡 Подключённые',callback_data='scan:active'),
          InlineKeyboardButton(text='🗂 Найденные',callback_data='scan:found')],
         [InlineKeyboardButton(text='🏆 Эффективность источников',callback_data='scan:performance')],
@@ -314,6 +315,30 @@ async def scan_discover(c):
         'Ниже лучшие публичные группы. Нажми на нужную — аккаунт подключится к ней и Scanner начнёт слушать новые сообщения.',
         reply_markup=source_rows(saved,'found')
     )
+
+@dp.callback_query(F.data=='scan:activate3')
+async def scan_activate_three(c):
+    if not scanner or not scanner.enabled:
+        return await c.answer('Scanner не настроен',show_alert=True)
+    rows=await db.scanner_sources('DISCOVERED',3)
+    if not rows:
+        return await c.answer('Сначала найди источники',show_alert=True)
+    await c.answer('Подключаю до 3 источников…')
+    ok=[]; errors=[]
+    for r in rows:
+        try:
+            src=await scanner.activate_source(r['id'])
+            ok.append('@'+src['username'])
+            await asyncio.sleep(2)
+        except Exception as e:
+            errors.append(f"@{r['username']}: {type(e).__name__}")
+            if 'подождать' in str(e).lower() or 'flood' in str(e).lower():
+                break
+    text='✅ <b>ПОДКЛЮЧЕНИЕ ИСТОЧНИКОВ</b>\n\n'
+    text+=('Подключены: '+', '.join(html.escape(x) for x in ok)) if ok else 'Ничего не подключено.'
+    if errors:
+        text+='\n⚠️ '+html.escape('; '.join(errors))
+    await c.message.answer(text,reply_markup=scanner_menu())
 
 @dp.callback_query(F.data=='scan:found')
 async def scan_found(c):
