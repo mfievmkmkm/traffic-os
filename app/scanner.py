@@ -11,13 +11,13 @@ SESSION = os.getenv("TG_SESSION", "")
 DISCOVERY_QUERIES = [
     x.strip() for x in os.getenv(
         "SCANNER_QUERIES",
-        "crypto chat,крипто чат,trading chat,трейдинг чат,bitcoin chat,BTC chat,futures trading,фьючерсы"
+        "crypto chat,крипто чат,trading chat,трейдинг чат,bitcoin chat,BTC chat,futures trading,фьючерсы,криптовалюта,биткоин трейдинг,альткоины,спот трейдинг,crypto trading,bitcoin trading,altcoin trading,crypto market,bybit chat,binance chat,TON chat,solana chat"
     ).split(",") if x.strip()
 ]
-MIN_SCORE = int(os.getenv("SCANNER_MIN_SCORE", "55"))
-STRONG_SCORE = int(os.getenv("SCANNER_STRONG_SCORE", "85"))
+MIN_SCORE = int(os.getenv("SCANNER_MIN_SCORE", "38"))
+STRONG_SCORE = int(os.getenv("SCANNER_STRONG_SCORE", "72"))
 MAX_CONTEXT = int(os.getenv("SCANNER_CONTEXT_CHARS", "1200"))
-DISCOVERY_HOURS = max(1, int(os.getenv("SCANNER_DISCOVERY_HOURS", "6")))
+DISCOVERY_HOURS = max(1, int(os.getenv("SCANNER_DISCOVERY_HOURS", "3")))
 HEALTH_HOURS = max(1, int(os.getenv("SCANNER_HEALTH_HOURS", "12")))
 AUTO_PAUSE_MESSAGES = max(0, int(os.getenv("SCANNER_AUTO_PAUSE_MESSAGES", "2000")))
 AUTO_PAUSE_MAX_LEADS = max(0, int(os.getenv("SCANNER_AUTO_PAUSE_MAX_LEADS", "0")))
@@ -71,7 +71,7 @@ class TelegramScanner:
         found = {}
         for query in DISCOVERY_QUERIES:
             try:
-                result = await self.client(functions.contacts.SearchRequest(q=query, limit=30))
+                result = await self.client(functions.contacts.SearchRequest(q=query, limit=40))
             except FloodWaitError as e:
                 self.last_error = f"Telegram FloodWait: {e.seconds}s"
                 break
@@ -99,15 +99,15 @@ class TelegramScanner:
                     }
 
         rows = sorted(found.values(), key=lambda x: x["participants"], reverse=True)
-        for item in rows[:80]:
+        for item in rows[:150]:
             await self.db.upsert_scanner_source(
                 item["tg_id"], item["username"], item["title"], "DISCOVERED",
                 item["query"], item["participants"]
             )
-        self.last_discovery_count = len(rows[:80])
+        self.last_discovery_count = len(rows[:150])
         if rows:
             self.last_error = ""
-        return rows[:80]
+        return rows[:150]
 
     async def activate_source(self, source_id):
         if not self.client or not self.client.is_connected():
