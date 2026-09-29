@@ -35,7 +35,8 @@ def allowed(uid): return not ADMINS or uid in ADMINS
 
 def menu():
     return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text='🎯 В работу',callback_data='next'),InlineKeyboardButton(text='🔎 Lead Finder',callback_data='finder')],\n        [InlineKeyboardButton(text='➕ Новый лид',callback_data='help_add'),InlineKeyboardButton(text='🧲 Зацепить',callback_data='hook_help')],
+        [InlineKeyboardButton(text='🎯 В работу',callback_data='next'),InlineKeyboardButton(text='🔎 Lead Finder',callback_data='finder')],
+        [InlineKeyboardButton(text='➕ Новый лид',callback_data='help_add'),InlineKeyboardButton(text='🧲 Зацепить',callback_data='hook_help')],
         [InlineKeyboardButton(text='✨ Помощник ответа',callback_data='aihelp'),InlineKeyboardButton(text='⏰ На сегодня',callback_data='followups')],
         [InlineKeyboardButton(text='📊 Результаты',callback_data='stats'),InlineKeyboardButton(text='🧭 Источники',callback_data='sources')],
         [InlineKeyboardButton(text='🧪 A/B',callback_data='ab'),InlineKeyboardButton(text='💼 Офферы',callback_data='offers')],
