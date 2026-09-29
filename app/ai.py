@@ -27,3 +27,41 @@ async def reply_suggestion(context, inbound):
         return (r.choices[0].message.content or '').strip()
     except Exception as e:
         return f'AI временно недоступен: {type(e).__name__}. Проверь LLM_API_KEY, баланс Polza и LLM_MODEL.'
+
+
+async def outreach_hooks(context, source='Telegram'):
+    """Create three context-based, permission-first opening messages."""
+    if not client:
+        return 'AI выключен: добавь LLM_API_KEY в Railway.'
+
+    prompt = f'''Ты пишешь первые сообщения для оператора Telegram CRM.
+Нужны РОВНО 3 коротких варианта первого сообщения потенциальному лиду на русском.
+
+Контекст сообщения/интереса человека: {context or 'нет'}
+Источник: {source or 'Telegram'}
+
+Цель: начать естественный разговор и только после интереса предложить релевантный Telegram-канал про крипторынок/трейдинг.
+
+Требования:
+- каждый вариант 1-3 коротких предложения;
+- цепляйся только за реально данный контекст, ничего не выдумывай;
+- не обещай прибыль, сигналы, инсайд, гарантированный заработок;
+- без фальшивой срочности, давления и манипуляций;
+- не делай вид, что вы знакомы;
+- не используй чувствительные характеристики человека;
+- не отправляй ссылку сразу: сначала спроси, актуально ли/можно ли скинуть;
+- стиль живой, разговорный, без канцелярита и без ощущения AI;
+- варианты должны отличаться: 1) контекстный вопрос, 2) любопытство/ценность, 3) максимально прямой.
+
+Верни только 3 готовых сообщения, каждое с новой строки и с префиксами A), B), C).'''
+
+    try:
+        r = await client.chat.completions.create(
+            model=MODEL,
+            messages=[{'role': 'user', 'content': prompt}],
+            temperature=0.85,
+            max_tokens=650,
+        )
+        return (r.choices[0].message.content or '').strip()
+    except Exception as e:
+        return f'AI временно недоступен: {type(e).__name__}. Проверь LLM_API_KEY, баланс Polza и LLM_MODEL.'
