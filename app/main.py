@@ -85,7 +85,11 @@ def score_ctx(ctx):
         ('btc',18),('битко',18),('eth',15),('эфир',15),
         ('крипт',16),('рынок',10),('лонг',12),('шорт',12),
         ('позици',10),('бирж',10),('спот',12),('альт',10),
-        ('ликвид',8),('плеч',10),('график',8),('теханализ',12)
+        ('ликвид',8),('плеч',10),('график',8),('теханализ',12),
+        ('торг',18),('сделк',14),('вход',10),('стоп',10),('тейк',10),
+        ('уров',8),('пробой',10),('скальп',16),('интрадей',16),
+        ('bybit',10),('binance',10),('solana',10),(' sol ',10),('ton ',10),
+        ('мемкоин',8),('memecoin',8),('pump',8),('памп',8),('коррекц',8)
     ]
     for k,n in signals:
         if k in x: s += n
@@ -259,7 +263,7 @@ def scanner_menu():
 
 def source_rows(rows, mode='found'):
     buttons=[]
-    for r in rows[:12]:
+    for r in rows[:20]:
         title=(r['title'] or r['username'])[:28]
         if mode=='active':
             buttons.append([InlineKeyboardButton(
@@ -299,12 +303,12 @@ async def scan_discover(c):
     if not allowed(c.from_user.id): return await c.answer('Нет доступа',show_alert=True)
     if not scanner or not scanner.enabled:
         return await c.answer('Сначала настрой TG_API_ID / TG_API_HASH / TG_SESSION',show_alert=True)
-    await c.answer('Ищу публичные крипто-группы…')
+    await c.answer('Расширенный поиск крипто-групп…')
     try:
         rows=await scanner.discover()
     except Exception as e:
         return await c.message.answer(f'⚠️ Scanner: {html.escape(str(e))}')
-    saved=await db.scanner_sources('DISCOVERED',12)
+    saved=await db.scanner_sources('DISCOVERED',20)
     await c.message.answer(
         f'🔭 <b>ПОИСК ЗАВЕРШЁН</b>\n\nНайдено в этом проходе: <b>{len(rows)}</b>\n'
         'Ниже лучшие публичные группы. Нажми на нужную — аккаунт подключится к ней и Scanner начнёт слушать новые сообщения.',
@@ -314,7 +318,7 @@ async def scan_discover(c):
 @dp.callback_query(F.data=='scan:found')
 async def scan_found(c):
     if not allowed(c.from_user.id): return await c.answer('Нет доступа',show_alert=True)
-    rows=await db.scanner_sources('DISCOVERED',12)
+    rows=await db.scanner_sources('DISCOVERED',20)
     await c.message.answer(
         '🗂 <b>НАЙДЕННЫЕ ИСТОЧНИКИ</b>\n\n'+('Выбери группы для подключения.' if rows else 'Пока пусто — нажми 🔭 «Найти крипто-чаты».'),
         reply_markup=source_rows(rows,'found')
@@ -324,7 +328,7 @@ async def scan_found(c):
 @dp.callback_query(F.data=='scan:active')
 async def scan_active(c):
     if not allowed(c.from_user.id): return await c.answer('Нет доступа',show_alert=True)
-    rows=await db.scanner_sources('ACTIVE',12)
+    rows=await db.scanner_sources('ACTIVE',20)
     text='\n'.join(
         f"• @{html.escape(r['username'])} · 👁 {r['messages_seen']} · 🔥 {r['leads_found']}"
         for r in rows
