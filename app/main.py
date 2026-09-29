@@ -254,7 +254,7 @@ async def report_cmd(m:Message):
 
 def scanner_menu():
     return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text='🔭 Найти крипто-чаты',callback_data='scan:discover')],
+        [InlineKeyboardButton(text='🕸 Загрузить сетку',callback_data='scan:discover')],
         [InlineKeyboardButton(text='➕ Подключить 3 лучших',callback_data='scan:activate3')],
         [InlineKeyboardButton(text='📡 Подключённые',callback_data='scan:active'),
          InlineKeyboardButton(text='🗂 Найденные',callback_data='scan:found')],
@@ -293,7 +293,7 @@ async def finder_cb(c):
         f"🗂 Найдено кандидатов: <b>{st['discovered_sources']}</b>\n"
         f"🔄 Последний автопоиск: <b>{st.get('last_discovery_count',0)}</b> источников\n"
         f"⏸ Автопауза: <b>{st.get('auto_paused_count',0)}</b>\n\n"
-        "Scanner сам обновляет каталог источников по расписанию. Подключённые группы слушаются в реальном времени, а сильные лиды приходят отдельным уведомлением."
+        "Источник чатов: заданная крипто-сетка. Глобальный поиск выключен. Scanner отбирает живые публичные обсуждения, слушает новые сообщения в подключённых группах и присылает сильных лидов отдельно."
         f"{setup}{err}",
         reply_markup=scanner_menu()
     )
@@ -304,15 +304,15 @@ async def scan_discover(c):
     if not allowed(c.from_user.id): return await c.answer('Нет доступа',show_alert=True)
     if not scanner or not scanner.enabled:
         return await c.answer('Сначала настрой TG_API_ID / TG_API_HASH / TG_SESSION',show_alert=True)
-    await c.answer('Расширенный поиск крипто-групп…')
+    await c.answer('Проверяю сетку и живые обсуждения…')
     try:
         rows=await scanner.discover()
     except Exception as e:
         return await c.message.answer(f'⚠️ Scanner: {html.escape(str(e))}')
     saved=await db.scanner_sources('DISCOVERED',20)
     await c.message.answer(
-        f'🔭 <b>ПОИСК ЗАВЕРШЁН</b>\n\nНайдено в этом проходе: <b>{len(rows)}</b>\n'
-        'Ниже лучшие публичные группы. Нажми на нужную — аккаунт подключится к ней и Scanner начнёт слушать новые сообщения.',
+        f'🕸 <b>СЕТКА ПРОВЕРЕНА</b>\n\nЖивых чатов в этом проходе: <b>{len(rows)}</b>\n'
+        'Каналы и почти односторонние группы отсеяны. Ниже остаются публичные обсуждения с несколькими реальными авторами.',
         reply_markup=source_rows(saved,'found')
     )
 
@@ -345,7 +345,7 @@ async def scan_found(c):
     if not allowed(c.from_user.id): return await c.answer('Нет доступа',show_alert=True)
     rows=await db.scanner_sources('DISCOVERED',20)
     await c.message.answer(
-        '🗂 <b>НАЙДЕННЫЕ ИСТОЧНИКИ</b>\n\n'+('Выбери группы для подключения.' if rows else 'Пока пусто — нажми 🔭 «Найти крипто-чаты».'),
+        '🗂 <b>НАЙДЕННЫЕ ИСТОЧНИКИ</b>\n\n'+('Выбери группы для подключения.' if rows else 'Пока пусто — нажми 🕸 «Загрузить сетку».'),
         reply_markup=source_rows(rows,'found')
     )
     await c.answer()
