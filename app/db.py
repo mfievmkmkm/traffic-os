@@ -1,4 +1,5 @@
 import asyncpg
+from decimal import Decimal
 
 SCHEMA = r'''
 CREATE TABLE IF NOT EXISTS offers(
@@ -46,6 +47,32 @@ CREATE TABLE IF NOT EXISTS dialogue_notes(
   suggestion TEXT,
   created_at TIMESTAMPTZ DEFAULT now()
 );
+CREATE TABLE IF NOT EXISTS scanner_sources(
+  id BIGSERIAL PRIMARY KEY,
+  tg_id BIGINT UNIQUE NOT NULL,
+  username TEXT UNIQUE NOT NULL,
+  title TEXT NOT NULL,
+  status TEXT NOT NULL DEFAULT 'DISCOVERED',
+  discovered_by TEXT DEFAULT '',
+  participants INTEGER DEFAULT 0,
+  messages_seen INTEGER DEFAULT 0,
+  leads_found INTEGER DEFAULT 0,
+  last_seen_at TIMESTAMPTZ,
+  created_at TIMESTAMPTZ DEFAULT now(),
+  updated_at TIMESTAMPTZ DEFAULT now()
+);
+CREATE TABLE IF NOT EXISTS lead_evidence(
+  id BIGSERIAL PRIMARY KEY,
+  lead_id BIGINT REFERENCES leads(id) ON DELETE CASCADE,
+  source_id BIGINT REFERENCES scanner_sources(id) ON DELETE SET NULL,
+  message_id BIGINT,
+  context TEXT NOT NULL,
+  score INTEGER DEFAULT 0,
+  created_at TIMESTAMPTZ DEFAULT now(),
+  UNIQUE(source_id,message_id)
+);
+CREATE INDEX IF NOT EXISTS idx_scanner_sources_status ON scanner_sources(status);
+CREATE INDEX IF NOT EXISTS idx_evidence_lead ON lead_evidence(lead_id);
 CREATE TABLE IF NOT EXISTS app_state(
   key TEXT PRIMARY KEY,
   value TEXT NOT NULL,
@@ -76,7 +103,7 @@ class DB:
     async def ping(self):
         return await self.pool.fetchval('SELECT 1') == 1
 
-    async def ensure_default_offer(self, name, rate, ref):
+    async def ensure_default_offer(self, name, Decimal(str(rate)), ref):
         return await self.pool.fetchrow(
             """INSERT INTO offers(name,rate,referral_link) VALUES($1,$2,$3)
                ON CONFLICT(name) DO UPDATE SET rate=EXCLUDED.rate,
@@ -87,7 +114,7 @@ class DB:
         return await self.pool.fetchrow(
             """INSERT INTO offers(name,rate,referral_link) VALUES($1,$2,$3)
                ON CONFLICT(name) DO UPDATE SET rate=EXCLUDED.rate,referral_link=EXCLUDED.referral_link RETURNING *""",
-            name, rate, ref)
+            name, Decimal(str(rate)), ref)
 
     async def offers(self):
         return await self.pool.fetch('SELECT * FROM offers WHERE active ORDER BY id')
@@ -162,7 +189,7 @@ class DB:
 
     async def stats(self, default_rate, days=None):
         where = ''
-        args = [default_rate]
+        args = [Decimal(str(default_rate))]
         if days:
             where = 'WHERE l.created_at >= now()-make_interval(days=>$2)'
             args.append(int(days))
@@ -215,7 +242,7 @@ class DB:
               count(l.id) FILTER(WHERE l.approved_at::date=d.day) approved,
               COALESCE(sum(COALESCE(o.rate,$2)) FILTER(WHERE l.approved_at::date=d.day),0) revenue
             FROM d LEFT JOIN leads l ON l.created_at::date<=d.day LEFT JOIN offers o ON o.id=l.offer_id
-            GROUP BY d.day ORDER BY d.day""", int(days), default_rate)
+            GROUP BY d.day ORDER BY d.day""", int(days), Decimal(str(default_rate)))
 
     async def recent_leads(self, limit=50):
         return await self.pool.fetch("""
@@ -231,6 +258,74 @@ class DB:
                    l.link_sent_at,l.joined_at,l.approved_at,l.paid_at,l.followup_at,l.notes
             FROM leads l LEFT JOIN offers o ON o.id=l.offer_id LEFT JOIN campaigns c ON c.id=l.campaign_id
             ORDER BY l.id""")
+
+    async def upsert_scanner_source(self, tg_id, username, title, status='DISCOVERED', discovered_by='', participants=0):
+        username = username.strip().lstrip('@').lower()
+        return await self.pool.fetchrow(
+            """INSERT INTO scanner_sources(tg_id,username,title,status,discovered_by,participants)
+               VALUES($1,$2,$3,$4,$5,$6)
+               ON CONFLICT(tg_id) DO UPDATE SET
+                 username=EXCLUDED.username,title=EXCLUDED.title,
+                 discovered_by=CASE WHEN scanner_sources.discovered_by='' THEN EXCLUDED.discovered_by ELSE scanner_sources.discovered_by END,
+                 participants=GREATEST(scanner_sources.participants,EXCLUDED.participants),
+                 updated_at=now()
+               RETURNING *""",
+            int(tg_id), username, title, status, discovered_by, int(participants or 0)
+        )
+
+    async def scanner_sources(self, status=None, limit=50):
+        if status:
+            return await self.pool.fetch(
+                """SELECT * FROM scanner_sources WHERE status=$1
+                   ORDER BY participants DESC,updated_at DESC LIMIT $2""", status, int(limit))
+        return await self.pool.fetch(
+            """SELECT * FROM scanner_sources
+               ORDER BY CASE status WHEN 'ACTIVE' THEN 0 WHEN 'DISCOVERED' THEN 1 ELSE 2 END,
+                        participants DESC,updated_at DESC LIMIT $1""", int(limit))
+
+    async def get_scanner_source(self, source_id):
+        return await self.pool.fetchrow('SELECT * FROM scanner_sources WHERE id=$1', int(source_id))
+
+    async def scanner_source_by_username(self, username):
+        return await self.pool.fetchrow(
+            'SELECT * FROM scanner_sources WHERE username=$1',
+            username.strip().lstrip('@').lower()
+        )
+
+    async def set_scanner_source_status(self, source_id, status):
+        if status not in {'DISCOVERED','ACTIVE','PAUSED','REJECTED'}:
+            raise ValueError('invalid scanner source status')
+        await self.pool.execute(
+            'UPDATE scanner_sources SET status=$1,updated_at=now() WHERE id=$2',
+            status, int(source_id)
+        )
+
+    async def touch_scanner_source(self, source_id):
+        await self.pool.execute(
+            """UPDATE scanner_sources SET messages_seen=messages_seen+1,
+               last_seen_at=now(),updated_at=now() WHERE id=$1""", int(source_id))
+
+    async def mark_scanner_lead(self, source_id):
+        await self.pool.execute(
+            'UPDATE scanner_sources SET leads_found=leads_found+1,updated_at=now() WHERE id=$1',
+            int(source_id)
+        )
+
+    async def add_lead_evidence(self, lead_id, source_id, message_id, context, score):
+        await self.pool.execute(
+            """INSERT INTO lead_evidence(lead_id,source_id,message_id,context,score)
+               VALUES($1,$2,$3,$4,$5)
+               ON CONFLICT(source_id,message_id) DO NOTHING""",
+            int(lead_id), int(source_id), int(message_id), context, int(score)
+        )
+
+    async def lead_evidence(self, lead_id, limit=5):
+        return await self.pool.fetch(
+            """SELECT e.*,s.title source_title,s.username source_username
+               FROM lead_evidence e LEFT JOIN scanner_sources s ON s.id=e.source_id
+               WHERE e.lead_id=$1 ORDER BY e.created_at DESC LIMIT $2""",
+            int(lead_id), int(limit)
+        )
 
     async def set_state(self, key, value):
         await self.pool.execute("""INSERT INTO app_state(key,value) VALUES($1,$2)
