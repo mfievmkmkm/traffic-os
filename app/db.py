@@ -103,12 +103,12 @@ class DB:
     async def ping(self):
         return await self.pool.fetchval('SELECT 1') == 1
 
-    async def ensure_default_offer(self, name, Decimal(str(rate)), ref):
+    async def ensure_default_offer(self, name, rate, ref):
         return await self.pool.fetchrow(
             """INSERT INTO offers(name,rate,referral_link) VALUES($1,$2,$3)
                ON CONFLICT(name) DO UPDATE SET rate=EXCLUDED.rate,
                referral_link=CASE WHEN EXCLUDED.referral_link<>'' THEN EXCLUDED.referral_link ELSE offers.referral_link END
-               RETURNING *""", name, rate, ref)
+               RETURNING *""", name, Decimal(str(rate)), ref)
 
     async def add_offer(self, name, rate, ref=''):
         return await self.pool.fetchrow(
