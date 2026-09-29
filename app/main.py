@@ -13,6 +13,7 @@ from dotenv import load_dotenv
 from .db import DB
 from .ai import reply_suggestion, outreach_hooks
 from .web import create_app
+from .scanner import TelegramScanner
 
 load_dotenv()
 TOKEN = os.getenv('BOT_TOKEN','')
@@ -30,8 +31,9 @@ PUBLIC_URL = os.getenv('PUBLIC_URL','').rstrip('/')
 db = DB(DBURL)
 dp = Dispatcher()
 DEFAULT_OFFER_ID = None
+scanner = None
 
-def allowed(uid): return not ADMINS or uid in ADMINS
+def allowed(uid): return bool(ADMINS) and uid in ADMINS
 
 def menu():
     return InlineKeyboardMarkup(inline_keyboard=[
@@ -89,7 +91,17 @@ async def report_text(days=None):
 async def show_next(m):
     l=await db.next_lead()
     if not l: return await m.answer('Очередь NEW пуста.\n/add @user | источник | контекст',reply_markup=menu())
-    await m.answer(f"🎯 <b>LEAD #{l['id']}</b>\n\n👤 @{l['username']}\n📍 {l['source']}\n⭐ {l['score']}/100\n💼 {l['offer_name'] or 'default'}\n🏷 {l['campaign_name'] or '—'}\n\n🧠 {l['context'] or '—'}",reply_markup=kb(l['id']))
+    evidence=await db.lead_evidence(l['id'],1)
+    ev=''
+    if evidence:
+        e=evidence[0]
+        ev=f"\n\n🔎 <b>Почему попал:</b> @{html.escape(e['source_username'] or 'source')} · message #{e['message_id']}"
+    await m.answer(
+        f"🎯 <b>LEAD #{l['id']}</b>\n\n👤 @{html.escape(l['username'])}\n📍 {html.escape(l['source'])}\n"
+        f"⭐ {l['score']}/100\n💼 {html.escape(l['offer_name'] or 'default')}\n🏷 {html.escape(l['campaign_name'] or '—')}\n\n"
+        f"🧠 {html.escape(l['context'] or '—')}{ev}",
+        reply_markup=kb(l['id'])
+    )
 
 @dp.message(CommandStart())
 async def start(m:Message):
@@ -197,18 +209,115 @@ async def ai_cmd(m:Message):
 async def report_cmd(m:Message):
     if allowed(m.from_user.id): await m.answer(await report_text(1),reply_markup=menu())
 
+def scanner_menu():
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text='🔭 Найти крипто-чаты',callback_data='scan:discover')],
+        [InlineKeyboardButton(text='📡 Подключённые',callback_data='scan:active'),
+         InlineKeyboardButton(text='🗂 Найденные',callback_data='scan:found')],
+        [InlineKeyboardButton(text='🎯 К лидам',callback_data='next')],
+    ])
+
+def source_rows(rows, mode='found'):
+    buttons=[]
+    for r in rows[:12]:
+        title=(r['title'] or r['username'])[:28]
+        if mode=='active':
+            buttons.append([InlineKeyboardButton(
+                text=f"⏸ {title} · {r['leads_found']} лид.",
+                callback_data=f"src:pause:{r['id']}"
+            )])
+        else:
+            size=f"{r['participants']//1000}k" if r['participants']>=1000 else str(r['participants'] or '—')
+            buttons.append([InlineKeyboardButton(
+                text=f"➕ {title} · {size}",
+                callback_data=f"src:on:{r['id']}"
+            )])
+    buttons.append([InlineKeyboardButton(text='⬅️ Scanner',callback_data='finder')])
+    return InlineKeyboardMarkup(inline_keyboard=buttons)
+
 @dp.callback_query(F.data=='finder')
 async def finder_cb(c):
     if not allowed(c.from_user.id): return await c.answer('Нет доступа',show_alert=True)
+    st=await scanner.status() if scanner else {'configured':False,'connected':False,'active_sources':0,'discovered_sources':0,'last_error':''}
+    icon='🟢' if st['connected'] else '🟠'
+    setup='' if st['configured'] else '\n\n⚙️ Для автосканера добавь TG_API_ID, TG_API_HASH и TG_SESSION в Railway.'
+    err=f"\n⚠️ {html.escape(st['last_error'])}" if st.get('last_error') else ''
     await c.message.answer(
-        '🔎 <b>LEAD FINDER V1</b>\n\n'
-        '1) <b>Авто:</b> добавь бота в разрешённую тематическую группу. '
-        'Чтобы он видел обычные сообщения, он должен быть админом или Privacy Mode должен быть отключён.\n\n'
-        '2) <b>Пачкой:</b> используй <code>/find</code> и строки '
-        '<code>@user | источник | контекст</code>.\n\n'
-        'Finder никому сам не пишет. Он отбирает кандидатов, убирает дубли и ставит сильных наверх.'
+        f"🔎 <b>TRAFFIC SCANNER</b>\n\n{icon} Telegram Scanner: {'онлайн' if st['connected'] else 'не подключён'}\n"
+        f"📡 Активных источников: <b>{st['active_sources']}</b>\n"
+        f"🗂 Найдено кандидатов: <b>{st['discovered_sources']}</b>\n\n"
+        "Scanner ищет публичные крипто-группы, а после твоего подтверждения следит за новыми сообщениями и кладёт релевантных авторов в 🎯 очередь."
+        f"{setup}{err}",
+        reply_markup=scanner_menu()
     )
     await c.answer()
+
+@dp.callback_query(F.data=='scan:discover')
+async def scan_discover(c):
+    if not allowed(c.from_user.id): return await c.answer('Нет доступа',show_alert=True)
+    if not scanner or not scanner.enabled:
+        return await c.answer('Сначала настрой TG_API_ID / TG_API_HASH / TG_SESSION',show_alert=True)
+    await c.answer('Ищу публичные крипто-группы…')
+    try:
+        rows=await scanner.discover()
+    except Exception as e:
+        return await c.message.answer(f'⚠️ Scanner: {html.escape(str(e))}')
+    saved=await db.scanner_sources('DISCOVERED',12)
+    await c.message.answer(
+        f'🔭 <b>ПОИСК ЗАВЕРШЁН</b>\n\nНайдено в этом проходе: <b>{len(rows)}</b>\n'
+        'Ниже лучшие публичные группы. Нажми на нужную — аккаунт подключится к ней и Scanner начнёт слушать новые сообщения.',
+        reply_markup=source_rows(saved,'found')
+    )
+
+@dp.callback_query(F.data=='scan:found')
+async def scan_found(c):
+    if not allowed(c.from_user.id): return await c.answer('Нет доступа',show_alert=True)
+    rows=await db.scanner_sources('DISCOVERED',12)
+    await c.message.answer(
+        '🗂 <b>НАЙДЕННЫЕ ИСТОЧНИКИ</b>\n\n'+('Выбери группы для подключения.' if rows else 'Пока пусто — нажми 🔭 «Найти крипто-чаты».'),
+        reply_markup=source_rows(rows,'found')
+    )
+    await c.answer()
+
+@dp.callback_query(F.data=='scan:active')
+async def scan_active(c):
+    if not allowed(c.from_user.id): return await c.answer('Нет доступа',show_alert=True)
+    rows=await db.scanner_sources('ACTIVE',12)
+    text='\n'.join(
+        f"• @{html.escape(r['username'])} · 👁 {r['messages_seen']} · 🔥 {r['leads_found']}"
+        for r in rows
+    ) or 'Активных источников пока нет.'
+    await c.message.answer(
+        f'📡 <b>ПОДКЛЮЧЁННЫЕ</b>\n\n{text}\n\n👁 — просмотрено сообщений · 🔥 — кандидатов добавлено',
+        reply_markup=source_rows(rows,'active')
+    )
+    await c.answer()
+
+@dp.callback_query(F.data.startswith('src:on:'))
+async def source_on(c):
+    if not allowed(c.from_user.id): return await c.answer('Нет доступа',show_alert=True)
+    if not scanner or not scanner.enabled:
+        return await c.answer('Scanner не настроен',show_alert=True)
+    sid=int(c.data.split(':')[2])
+    await c.answer('Подключаю…')
+    try:
+        src=await scanner.activate_source(sid)
+        await c.message.answer(
+            f"✅ <b>{html.escape(src['title'])}</b> подключён.\n"
+            f"Scanner теперь следит за новыми сообщениями в @{html.escape(src['username'])}.",
+            reply_markup=scanner_menu()
+        )
+    except Exception as e:
+        await c.message.answer(f'⚠️ Не удалось подключить: {html.escape(str(e))}')
+
+@dp.callback_query(F.data.startswith('src:pause:'))
+async def source_pause(c):
+    if not allowed(c.from_user.id): return await c.answer('Нет доступа',show_alert=True)
+    sid=int(c.data.split(':')[2])
+    if scanner: await scanner.pause_source(sid)
+    else: await db.set_scanner_source_status(sid,'PAUSED')
+    await c.answer('Поставлен на паузу')
+    await c.message.answer('⏸ Источник больше не добавляет новых кандидатов.',reply_markup=scanner_menu())
 
 @dp.callback_query(F.data=='hook_help')
 async def hook_help_cb(c):
@@ -303,17 +412,6 @@ async def dashboard(c):
         await c.message.answer('🌐 Добавь PUBLIC_URL после выдачи домена Railway. Dashboard уже слушает PORT.')
     await c.answer()
 
-@dp.message(F.chat.type.in_({'group','supergroup'}), F.text)
-async def observe_group_candidate(m:Message):
-    if not m.from_user or m.from_user.is_bot or not m.from_user.username: return
-    text=(m.text or '').strip()
-    if len(text) < 18: return
-    sc=score_ctx(text)
-    if sc < 55: return
-    source=f'tg:{m.chat.title or m.chat.id}'
-    ctx=text[:900]
-    await db.add_lead(m.from_user.username,source,ctx,sc,DEFAULT_OFFER_ID)
-
 @dp.message(Command('paid'))
 async def paid(m:Message):
     if allowed(m.from_user.id): await db.mark_paid_all(); await m.answer('✅ Все неоплаченные APPROVED отмечены как оплаченные.',reply_markup=menu())
@@ -338,14 +436,17 @@ async def run_web():
     await server.serve()
 
 async def main():
-    global DEFAULT_OFFER_ID
-    if not TOKEN or not DBURL: raise RuntimeError('Set BOT_TOKEN and DATABASE_URL')
+    global DEFAULT_OFFER_ID, scanner
+    if not TOKEN or not DBURL or not ADMINS: raise RuntimeError('Set BOT_TOKEN, DATABASE_URL and ADMIN_IDS')
     await db.connect(); o=await db.ensure_default_offer(OFFER,RATE,REF); DEFAULT_OFFER_ID=o['id']
     bot=Bot(TOKEN,default=DefaultBotProperties(parse_mode=ParseMode.HTML))
+    scanner=TelegramScanner(db,score_ctx,DEFAULT_OFFER_ID)
+    await scanner.start()
     tasks=[asyncio.create_task(run_web()),asyncio.create_task(daily_report_loop(bot))]
     try: await dp.start_polling(bot)
     finally:
         for t in tasks: t.cancel()
+        if scanner: await scanner.stop()
         await db.close()
 
 if __name__=='__main__': asyncio.run(main())
