@@ -35,24 +35,44 @@ class TelegramScanner:
         self.last_discovery_count = 0
         self.auto_paused_count = 0
 
-    async def start(self):
+    async def _ensure_connected(self):
+        """Keep the MTProto client alive across Railway/network reconnects."""
         if not self.enabled:
+            missing = []
+            if not API_ID: missing.append("TG_API_ID")
+            if not API_HASH: missing.append("TG_API_HASH")
+            if not SESSION: missing.append("TG_SESSION")
+            self.last_error = "Не заданы Railway Variables: " + ", ".join(missing)
             return False
-        self.client = TelegramClient(StringSession(SESSION), API_ID, API_HASH)
-        await self.client.connect()
-        if not await self.client.is_user_authorized():
-            self.last_error = "TG_SESSION не авторизована"
-            await self.client.disconnect()
-            self.client = None
+
+        try:
+            if self.client is None:
+                self.client = TelegramClient(StringSession(SESSION), API_ID, API_HASH)
+                self.client.add_event_handler(self._on_message, events.NewMessage)
+
+            if not self.client.is_connected():
+                await self.client.connect()
+
+            if not await self.client.is_user_authorized():
+                self.last_error = "TG_SESSION существует, но Telegram-сессия больше не авторизована"
+                return False
+
+            self.last_error = ""
+            return True
+        except Exception as e:
+            self.last_error = f"Telegram reconnect {type(e).__name__}: {e}"
             return False
-        self.client.add_event_handler(self._on_message, events.NewMessage)
-        return True
+
+    async def start(self):
+        return await self._ensure_connected()
 
     async def stop(self):
         if self.client:
             await self.client.disconnect()
 
     async def status(self):
+        if self.enabled and (not self.client or not self.client.is_connected()):
+            await self._ensure_connected()
         active = await self.db.scanner_sources("ACTIVE")
         discovered = await self.db.scanner_sources("DISCOVERED")
         return {
@@ -66,8 +86,8 @@ class TelegramScanner:
         }
 
     async def discover(self):
-        if not self.client or not self.client.is_connected():
-            raise RuntimeError("Scanner не подключён. Нужны TG_API_ID, TG_API_HASH и TG_SESSION.")
+        if not await self._ensure_connected():
+            raise RuntimeError(self.last_error or "Scanner не смог подключиться к Telegram.")
         found = {}
         for query in DISCOVERY_QUERIES:
             try:
@@ -110,8 +130,8 @@ class TelegramScanner:
         return rows[:150]
 
     async def activate_source(self, source_id):
-        if not self.client or not self.client.is_connected():
-            raise RuntimeError("Scanner не подключён.")
+        if not await self._ensure_connected():
+            raise RuntimeError(self.last_error or "Scanner не смог подключиться к Telegram.")
         src = await self.db.get_scanner_source(source_id)
         if not src:
             raise ValueError("Источник не найден")
@@ -142,6 +162,9 @@ class TelegramScanner:
         while True:
             now = loop.time()
             try:
+                if not await self._ensure_connected():
+                    await asyncio.sleep(60)
+                    continue
                 if now - last_discovery >= discovery_seconds:
                     await self.discover()
                     last_discovery = now
