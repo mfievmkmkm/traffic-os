@@ -1,4 +1,4 @@
-import os, asyncio, csv, io
+import os, asyncio, csv, io, html
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
@@ -11,7 +11,7 @@ from aiogram.client.default import DefaultBotProperties
 from dotenv import load_dotenv
 
 from .db import DB
-from .ai import reply_suggestion
+from .ai import reply_suggestion, outreach_hooks
 from .web import create_app
 
 load_dotenv()
@@ -35,7 +35,7 @@ def allowed(uid): return not ADMINS or uid in ADMINS
 
 def menu():
     return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text='🎯 В работу',callback_data='next'),InlineKeyboardButton(text='➕ Новый лид',callback_data='help_add')],
+        [InlineKeyboardButton(text='🎯 В работу',callback_data='next'),InlineKeyboardButton(text='🔎 Lead Finder',callback_data='finder')],\n        [InlineKeyboardButton(text='➕ Новый лид',callback_data='help_add'),InlineKeyboardButton(text='🧲 Зацепить',callback_data='hook_help')],
         [InlineKeyboardButton(text='✨ Помощник ответа',callback_data='aihelp'),InlineKeyboardButton(text='⏰ На сегодня',callback_data='followups')],
         [InlineKeyboardButton(text='📊 Результаты',callback_data='stats'),InlineKeyboardButton(text='🧭 Источники',callback_data='sources')],
         [InlineKeyboardButton(text='🧪 A/B',callback_data='ab'),InlineKeyboardButton(text='💼 Офферы',callback_data='offers')],
@@ -45,7 +45,7 @@ def menu():
 
 def kb(lid):
     return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text='💬 Текст A',callback_data=f't:A:{lid}'),InlineKeyboardButton(text='💬 Текст B',callback_data=f't:B:{lid}')],
+        [InlineKeyboardButton(text='🧲 AI-заход',callback_data=f'hook:{lid}'),InlineKeyboardButton(text='💬 Текст A/B',callback_data=f't:A:{lid}')],
         [InlineKeyboardButton(text='✅ Написал',callback_data=f's:CONTACTED:{lid}'),InlineKeyboardButton(text='🚫 Пропустить',callback_data=f's:SKIPPED:{lid}')],
         [InlineKeyboardButton(text='↩️ Ответил',callback_data=f's:REPLIED:{lid}'),InlineKeyboardButton(text='🟢 Интерес',callback_data=f's:INTERESTED:{lid}')],
         [InlineKeyboardButton(text='🔗 Ссылка',callback_data=f'link:{lid}'),InlineKeyboardButton(text='👤 Подписался',callback_data=f's:JOINED:{lid}')],
@@ -62,10 +62,22 @@ def script(l, variant):
     return f'привет. видел твои сообщения про {topic}. наткнулся на канал по рынку и трейду, показалось релевантным. если актуально — могу скинуть ссылку'
 
 def score_ctx(ctx):
-    s=20; x=(ctx or '').lower()
-    for k,n in [('btc',15),('битко',15),('фьюч',20),('трейд',20),('крипт',15),('рынок',10)]:
+    """Topical relevance only; never scores protected/sensitive traits."""
+    x=(ctx or '').lower()
+    s=8
+    signals=[
+        ('фьюч',24),('futures',24),('трейд',22),('trading',22),
+        ('btc',18),('битко',18),('eth',15),('эфир',15),
+        ('крипт',16),('рынок',10),('лонг',12),('шорт',12),
+        ('позици',10),('бирж',10),('спот',12),('альт',10),
+        ('ликвид',8),('плеч',10),('график',8),('теханализ',12)
+    ]
+    for k,n in signals:
         if k in x: s += n
-    return min(s,100)
+    low_value=['реферал', 'накрут', 'взаимн', 'боты купить', 'спам']
+    for k in low_value:
+        if k in x: s -= 20
+    return max(0,min(s,100))
 
 async def report_text(days=None):
     s=await db.stats(RATE,days); con=s['contacted'] or 1; label=f'за {days} дн.' if days else 'всего'
@@ -104,6 +116,55 @@ async def imp(m:Message):
             await db.add_lead(p[0],p[1] if len(p)>1 else 'import',ctx,score_ctx(ctx),DEFAULT_OFFER_ID); n+=1
     await m.answer(f'✅ Обработано строк: {n}',reply_markup=menu())
 
+@dp.message(Command('find'))
+async def find_cmd(m:Message):
+    if not allowed(m.from_user.id): return
+    raw=(m.text or '').partition('\n')[2]
+    if not raw:
+        return await m.answer(
+            '🔎 <b>Lead Finder</b>\n\n'
+            'Пришли кандидатов пачкой:\n'
+            '<code>/find\n@user1 | Crypto Chat | обсуждает BTC и фьючерсы\n'
+            '@user2 | Market Chat | спрашивает про ETH</code>\n\n'
+            'Я уберу дубли, оценю релевантность и добавлю сильных в очередь.'
+        )
+    added=[]; skipped=[]
+    for line in raw.splitlines()[:100]:
+        p=[x.strip() for x in line.split('|',2)]
+        if not p or not p[0]: continue
+        ctx=p[2] if len(p)>2 else ''
+        sc=score_ctx(ctx)
+        if sc < 35:
+            skipped.append(p[0])
+            continue
+        l=await db.add_lead(p[0],p[1] if len(p)>1 else 'finder-import',ctx,sc,DEFAULT_OFFER_ID)
+        added.append((l['username'],l['score']))
+    added.sort(key=lambda x:x[1],reverse=True)
+    top='\n'.join(f'⭐ {sc}/100 · @{u}' for u,sc in added[:15]) or '—'
+    await m.answer(
+        f'🔎 <b>LEAD FINDER · ГОТОВО</b>\n\n'
+        f'В очередь: <b>{len(added)}</b>\n'
+        f'Слабых пропущено: <b>{len(skipped)}</b>\n\n'
+        f'<b>Лучшие:</b>\n{top}\n\n'
+        'Жми 🎯 «В работу» — лучшие идут первыми.',
+        reply_markup=menu()
+    )
+
+@dp.message(Command('hook'))
+async def hook_cmd(m:Message):
+    if not allowed(m.from_user.id): return
+    raw=(m.text or '').partition(' ')[2].strip()
+    if not raw.isdigit():
+        return await m.answer('🧲 Формат: <code>/hook LEAD_ID</code>')
+    l=await db.get(int(raw))
+    if not l: return await m.answer('Лид не найден.')
+    hooks=await outreach_hooks(l['context'],l['source'])
+    await m.answer(
+        f'🧲 <b>3 захода для @{html.escape(l["username"])}</b>\n\n'
+        f'{html.escape(hooks)}\n\n'
+        'Выбери тот, который соответствует реальному контексту. Ссылку сразу не отправляй.'
+    )
+
 @dp.message(Command('offer'))
 async def offer(m:Message):
     if not allowed(m.from_user.id): return
@@ -135,15 +196,49 @@ async def ai_cmd(m:Message):
 async def report_cmd(m:Message):
     if allowed(m.from_user.id): await m.answer(await report_text(1),reply_markup=menu())
 
+@dp.callback_query(F.data=='finder')
+async def finder_cb(c):
+    if not allowed(c.from_user.id): return await c.answer('Нет доступа',show_alert=True)
+    await c.message.answer(
+        '🔎 <b>LEAD FINDER V1</b>\n\n'
+        '1) <b>Авто:</b> добавь бота в разрешённую тематическую группу. '
+        'Чтобы он видел обычные сообщения, он должен быть админом или Privacy Mode должен быть отключён.\n\n'
+        '2) <b>Пачкой:</b> используй <code>/find</code> и строки '
+        '<code>@user | источник | контекст</code>.\n\n'
+        'Finder никому сам не пишет. Он отбирает кандидатов, убирает дубли и ставит сильных наверх.'
+    )
+    await c.answer()
+
+@dp.callback_query(F.data=='hook_help')
+async def hook_help_cb(c):
+    if not allowed(c.from_user.id): return await c.answer('Нет доступа',show_alert=True)
+    await c.message.answer(
+        '🧲 <b>ЗАЦЕПИТЬ</b>\n\n'
+        'Команда: <code>/hook LEAD_ID</code>\n'
+        'Polza сделает 3 живых захода под конкретный контекст: вопрос, ценность/любопытство и прямой вариант.'
+    )
+    await c.answer()
+
 @dp.callback_query(F.data=='help_add')
 async def help_cb(c):
-    await c.message.answer('➕ /add @username | источник | контекст\n📦 /import — массово\n🤖 /ai LEAD_ID | входящее сообщение\n💼 /offer Название | ставка | рефка\n🏷 /campaign Название | OFFER_ID\n📋 /report — отчёт за сутки'); await c.answer()
+    await c.message.answer('➕ /add @username | источник | контекст\n🔎 /find — отбор пачки кандидатов\n🧲 /hook LEAD_ID — 3 сильных захода\n📦 /import — массово\n🤖 /ai LEAD_ID | входящее сообщение\n💼 /offer Название | ставка | рефка\n🏷 /campaign Название | OFFER_ID\n📋 /report — отчёт за сутки'); await c.answer()
 
 @dp.callback_query(F.data=='aihelp')
 async def aih(c): await c.message.answer('🤖 <code>/ai LEAD_ID | его сообщение</code>\n\nAI даст 3 коротких варианта ответа.'); await c.answer()
 
 @dp.callback_query(F.data=='next')
 async def nxt(c): await c.answer(); await show_next(c.message)
+
+@dp.callback_query(F.data.startswith('hook:'))
+async def hook_button(c):
+    if not allowed(c.from_user.id): return await c.answer('Нет доступа',show_alert=True)
+    lid=int(c.data.split(':')[1]); l=await db.get(lid)
+    if not l: return await c.answer('Лид не найден',show_alert=True)
+    await c.answer('Генерирую…')
+    hooks=await outreach_hooks(l['context'],l['source'])
+    await c.message.answer(
+        f'🧲 <b>Заходы для @{html.escape(l["username"])}</b>\n\n{html.escape(hooks)}'
+    )
 
 @dp.callback_query(F.data.startswith('t:'))
 async def txt(c):
@@ -206,6 +301,17 @@ async def dashboard(c):
     else:
         await c.message.answer('🌐 Добавь PUBLIC_URL после выдачи домена Railway. Dashboard уже слушает PORT.')
     await c.answer()
+
+@dp.message(F.chat.type.in_({'group','supergroup'}), F.text)
+async def observe_group_candidate(m:Message):
+    if not m.from_user or m.from_user.is_bot or not m.from_user.username: return
+    text=(m.text or '').strip()
+    if len(text) < 18: return
+    sc=score_ctx(text)
+    if sc < 55: return
+    source=f'tg:{m.chat.title or m.chat.id}'
+    ctx=text[:900]
+    await db.add_lead(m.from_user.username,source,ctx,sc,DEFAULT_OFFER_ID)
 
 @dp.message(Command('paid'))
 async def paid(m:Message):
